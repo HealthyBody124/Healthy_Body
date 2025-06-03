@@ -5,6 +5,7 @@ if (!isset($_SESSION['usuario']) || $_SESSION['rol'] !== 'nutriologo') {
     header("Location: login.php");
     exit;
 }
+$chat_paciente_id = isset($_GET['chat_paciente_id']) ? (int)$_GET['chat_paciente_id'] : null;
 
 $conexion = new mysqli("localhost", "root", "", "sistema_nutricion");
 if ($conexion->connect_error) {
@@ -70,18 +71,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['actualizar_datos'])) 
 $stmt = $conexion->prepare("
     SELECT DISTINCT p.id, p.nombre, p.apellido
     FROM pacientes p
-    WHERE p.id IN (
-        SELECT CASE
-            WHEN m.tipo_remitente = 'nutriologo' THEN m.destinatario_id
-            ELSE m.remitente_id
-        END
-        FROM mensajes m
-        WHERE (m.remitente_id = ? AND m.tipo_remitente = 'nutriologo')
-        OR (m.destinatario_id = ? AND m.tipo_remitente = 'paciente')
-    )
+    LEFT JOIN mensajes m ON 
+        (m.remitente_id = p.id AND m.tipo_remitente = 'paciente' AND m.destinatario_id = ?)
+        OR (m.destinatario_id = p.id AND m.tipo_remitente = 'paciente' AND m.remitente_id = ?)
+    LEFT JOIN citas c ON c.paciente_id = p.id AND c.nutriologo_id = ?
+    WHERE m.id IS NOT NULL OR c.estado = 'pendiente' OR c.estado = 'confirmada'
     ORDER BY p.nombre ASC
 ");
-$stmt->bind_param("ii", $usuario_id, $usuario_id);
+$stmt->bind_param("iii", $usuario_id, $usuario_id, $usuario_id);
 $stmt->execute();
 $chats = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
 
@@ -350,6 +347,7 @@ $conexion->close();
     }
     </style>
 
+
 </style>
 </head>
 <body>
@@ -383,12 +381,14 @@ $conexion->close();
             <strong><?= htmlspecialchars($cita['nombre'] . ' ' . $cita['apellido']) ?></strong><br>
             <?= htmlspecialchars($cita['fecha']) ?> - <?= htmlspecialchars($cita['hora']) ?><br>
             <?= htmlspecialchars($cita['motivo']) ?><br>
-            <form method="post" action="actualizar_estado_cita.php">
-                <input type="hidden" name="cita_id" value="<?= $cita['id'] ?>">
-                <button type="submit" name="accion" value="confirmar">✅</button>
-                <button type="submit" name="accion" value="rechazar">❌</button>
-            </form>
-            </li>
+<form>
+  <input type="hidden" name="cita_id" value="<?= $cita['id'] ?>">
+  <button type="button" onclick="actualizarEstadoCita(event, <?= $cita['id'] ?>, 'confirmar')">✅</button>
+  <button type="button" onclick="actualizarEstadoCita(event, <?= $cita['id'] ?>, 'rechazar')">❌</button>
+</form>
+
+
+        </li>
         <?php endforeach; ?>
         </ul>
     </div>
@@ -452,10 +452,10 @@ $conexion->close();
         <div class="conversaciones">
             <h3>Pacientes</h3>
             <ul>
-                <?php foreach ($chats as $chat): ?>
-                    <li onclick="seleccionarContacto(<?= $chat['id'] ?>)">
-                        <?= htmlspecialchars($chat['nombre'] . ' ' . $chat['apellido']) ?>
-                    </li>
+    <?php foreach ($chats as $chat): ?>
+        <button class="chat-btn" data-paciente-id="<?= $chat['id'] ?>" onclick="seleccionarContacto(<?= $chat['id'] ?>)">
+            <?= htmlspecialchars($chat['nombre'] . ' ' . $chat['apellido']) ?>
+        </button>
                 <?php endforeach; ?>
             </ul>
         </div>
@@ -472,7 +472,24 @@ $conexion->close();
     </div>
 </div>
 
+<style>
 
+    .chat-btn {
+    display: block;
+    width: 100%;
+    padding: 10px;
+    margin-bottom: 5px;
+    background-color: #f1f1f1;
+    border: none;
+    text-align: left;
+    cursor: pointer;
+    border-radius: 5px;
+}
+
+.chat-btn:hover {
+    background-color: #ddd;
+}
+</style>
 <script>
 const remitente = <?= json_encode($usuario['id']) ?>;
 let contactoSeleccionado = null;
@@ -544,5 +561,152 @@ function mostrarSeccion(seccion) {
     }
 </script>
 
+
+<script>
+    const chatPacienteId = <?= $chat_paciente_id ? json_encode($chat_paciente_id) : 'null' ?>;
+</script>
+
+<script>
+function mostrarSeccion(seccion) {
+    document.getElementById('seccion-info').style.display = (seccion === 'info') ? 'block' : 'none';
+    document.getElementById('seccion-chat').style.display = (seccion === 'chat') ? 'block' : 'none';
+}
+
+function toggleNotifications() {
+    const panel = document.getElementById("notificationPanel");
+    panel.style.display = panel.style.display === "block" ? "none" : "block";
+}
+
+window.onload = function () {
+    // Mostrar sección de chat si hay un paciente seleccionado
+    if (chatPacienteId) {
+        document.getElementById('menu-secciones').value = 'chat';
+        mostrarSeccion('chat');
+
+        // Espera que la lista de chats se cargue y selecciona el paciente
+        setTimeout(() => {
+            const btn = document.querySelector(`.chat-btn[data-paciente-id="${chatPacienteId}"]`);
+            if (btn) {
+                btn.click();
+            }
+        }, 500); // Tiempo de espera para asegurar que se cargue el DOM
+    } else {
+        mostrarSeccion('info'); // Por defecto
+    }
+};
+</script>
+<script>
+function toggleNotifications() {
+    const panel = document.getElementById('notificationPanel');
+    panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
+}
+
+async function actualizarEstadoCita(event, citaId) {
+    event.preventDefault();
+    const form = event.target;
+    const accion = form.querySelector('button[type="submit"]:focus').value; // cuál botón se pulsó
+
+    // Petición a PHP para actualizar estado
+    const formData = new URLSearchParams();
+    formData.append('cita_id', citaId);
+    formData.append('accion', accion);
+
+    try {
+        const response = await fetch('actualizar_estado_cita.php', {
+            method: 'POST',
+            body: formData
+        });
+        const result = await response.json();
+
+        if (result.success) {
+            // Quitar cita del listado
+            form.closest('li').remove();
+
+            // Actualizar contador de notificaciones
+            const countSpan = document.querySelector('.notification-count');
+            if (countSpan) {
+                let count = parseInt(countSpan.textContent);
+                count--;
+                if (count <= 0) {
+                    countSpan.remove();
+                    // Opcional: ocultar panel si no hay notificaciones
+                    document.getElementById('notificationPanel').style.display = 'none';
+                } else {
+                    countSpan.textContent = count;
+                }
+            }
+        } else {
+            alert('Error al actualizar el estado de la cita.');
+        }
+    } catch (error) {
+        alert('Error de conexión o servidor.');
+    }
+
+    return false; // Para evitar submit tradicional
+}
+
+let accionSeleccionada = null;
+
+document.querySelectorAll('form').forEach(form => {
+  form.querySelectorAll('button[type="submit"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      accionSeleccionada = btn.value;
+    });
+  });
+
+  form.addEventListener('submit', event => {
+    if (!accionSeleccionada) return;
+    event.preventDefault();
+
+    const citaId = <?= $cita['id'] ?>; // mejor pásalo con dataset o parámetro
+    actualizarEstadoCita(event, citaId, accionSeleccionada);
+    accionSeleccionada = null; // resetear
+  });
+});
+
+async function actualizarEstadoCita(event, citaId, accion) {
+    event.preventDefault();
+
+    const form = event.target.closest('form');
+
+    const formData = new URLSearchParams();
+    formData.append('cita_id', citaId);
+    formData.append('accion', accion);
+
+    try {
+        const response = await fetch('actualizar_estado_cita.php', {
+            method: 'POST',
+            body: formData
+        });
+        const result = await response.json();
+
+        if (result.success) {
+            // Buscar el contenedor de la cita y removerlo
+            const contenedorCita = form.closest('li') || form.parentElement;
+            if (contenedorCita) {
+                contenedorCita.remove();
+            }
+
+            // Actualizar contador si existe
+            const countSpan = document.querySelector('.notification-count');
+            if (countSpan) {
+                let count = parseInt(countSpan.textContent);
+                count--;
+                if (count <= 0) {
+                    countSpan.remove();
+                    document.getElementById('notificationPanel').style.display = 'none';
+                } else {
+                    countSpan.textContent = count;
+                }
+            }
+        } else {
+            alert('Error al actualizar el estado de la cita: ' + (result.error || 'Error desconocido'));
+        }
+    } catch (error) {
+        alert('Error de conexión o servidor.');
+    }
+}
+
+</script>
 </body>
 </html>

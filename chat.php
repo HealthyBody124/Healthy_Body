@@ -41,8 +41,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['otro_id'])) {
     $stmt = $conexion->prepare("
         SELECT * FROM mensajes 
         WHERE 
-            (remitente_id = ? AND destinatario_id = ? AND tipo_remitente = ?)
-         OR (remitente_id = ? AND destinatario_id = ? AND tipo_remitente = ?)
+        (remitente_id = ? AND destinatario_id = ? AND tipo_remitente = ?)
+        OR (remitente_id = ? AND destinatario_id = ? AND tipo_remitente = ?)
         ORDER BY fecha_envio ASC
     ");
     $stmt->bind_param("iisiis", $mi_id, $otro_id, $mi_rol, $otro_id, $mi_id, $otro_rol);
